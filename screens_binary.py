@@ -14,17 +14,16 @@ from astropy.coordinates import (
 from astropy.visualization import quantity_support
 from scipy.signal.windows import tukey
 
-import screens
-from screens.screens.fields import dynamic_field
-from screens.screens.dynspec import DynamicSpectrum as DS
-from screens.screens.conjspec import ConjugateSpectrum as CS
-from screens.screens.screen import Source, Screen1D, Telescope
-from screens.screens.fields import phasor
-
-
-
 import sys
 sys.path.append('..')  # Add parent directory to the system path
+
+import screens
+from screens.fields import dynamic_field
+from screens.dynspec import DynamicSpectrum as DS
+from screens.conjspec import ConjugateSpectrum as CS
+from screens.screen import Source, Screen1D, Telescope
+from screens.fields import phasor
+
 
 from pint.models import get_model
 from RickettTables import fitvals
@@ -68,7 +67,7 @@ def evolve_sys( freq, d_p, d_s, p_x, e_x, s_x, s_n, s_mu):
     
     #setting observation
     telescopes = Telescope(pos = e_x)
-    #look at what this line does specifically
+    #setting the line of sight
     obs_lineofsight = telescopes.observe( source=pulsar, distance=d_p)
     
     #setting 1d screen 
@@ -77,21 +76,24 @@ def evolve_sys( freq, d_p, d_s, p_x, e_x, s_x, s_n, s_mu):
     
     #setting observation with screen
     obs_scr1_pulsar = scr.observe(source=pulsar, distance=d_p-d_s)
-    obs = telescopes.observe(source=obs_scr1_pulsar, distance=d_s)
+    obs_scr1 = telescopes.observe(source=obs_scr1_pulsar, distance=d_s)
     
+   
     #getting delays and taudot
-    tau0 = obs.tau[:, np.newaxis, np.newaxis]
-#     taudot = obs.taudot[:, np.newaxis, np.newaxis]
-    tau_t = tau0 #+ taudot * time
+    tau_t = np.hstack([ obs_lineofsight.tau.ravel() , 
+                        obs_scr1.tau.ravel() ])
     
     #calculating dynamic spectrum
-    ph = phasor(freq, tau_t)
-    brightness = obs.brightness[:, np.newaxis, np.newaxis]
-    dynwave = ph * brightness
+    ph = phasor(freq, tau_t[:, np.newaxis, np.newaxis])
+    brightness = np.hstack([ obs_lineofsight.brightness.ravel() ,
+                             obs_scr1.brightness.ravel()
+                               ])
+    
+    dynwave = ph * brightness[:, np.newaxis, np.newaxis]
 
     dynspec = np.abs(dynwave.sum(axis=0))**2
     
-    return dynspec.T, tau0, obs.brightness
+    return dynspec.T, tau_t, brightness
     
 def iterate_evolve(t, f, d_p, d_s, pul_v, ear_v, scr_v, p_pos, e_pos, screen_pos, scr_normal):
     #storage arrays
@@ -164,7 +166,7 @@ def orbital_evolver(t, nu1, phase1, Omp, Pb, Vpx, Vpy, ip ):
     
     return rx.to(u.au), ry.to(u.au)
 
-def iterate_evolve_orb(t, f, nu1, phase1, d_p, d_s, ear_v, scr_v, p_pos, e_pos, screen_pos, scr_normal, Pb, Omp, ip, Vpx, Vpy):
+def iterate_evolve_orb(t, f, nu1, phase1, d_p, d_s, ear_v, scr_v, p_pos, e_pos, screen_pos, scr_normal, Pb, Omp, ip, Vpx, Vpy, sig1, amp1, rand1 = False):
     #storage arrays
     dyns = []
     vsp = []
@@ -188,6 +190,17 @@ def iterate_evolve_orb(t, f, nu1, phase1, d_p, d_s, ear_v, scr_v, p_pos, e_pos, 
     vy = np.gradient( ry.to(u.km).value , t.to(u.s).value)
     
     scrn_vec = np.array([ scr_normal.x.value, scr_normal.y.value, scr_normal.z.value ]) 
+    
+    #screen vector, positions and magnifications
+    amp_val = screen_pos.value #
+    
+    #if no phase was given compute a phase for the line of images
+    if rand1 == True: 
+        rand1 = np.exp( 2j*np.pi*np.random.uniform(size=amp_val.shape) )
+        
+    elif rand1 == False:
+        rand1 = np.exp( 2j*np.pi* amp_val )
+        
 
     for j in range(len(t)):
 
@@ -199,8 +212,9 @@ def iterate_evolve_orb(t, f, nu1, phase1, d_p, d_s, ear_v, scr_v, p_pos, e_pos, 
 
         #screen vector, positions and magnifications
         amp_val = screen_pos.value #+ ( np.random.rand(len(scr1_pos)) - 0.5 )
-        scr_magnification =  np.exp(-amp_val**2 ) * np.exp(1j * amp_val)
-        scr_magnification /= scr_magnification[len(scr_magnification) // 2]
+        scr_magnification =  np.exp(-amp_val**2 / sig1**2 ) * rand1
+        scr_magnification /= np.max( np.abs(  scr_magnification ) )
+        scr_magnification *= amp1 
 
         #iterating the dynamic spectrum
         ds_tmp = evolve_sys(  
